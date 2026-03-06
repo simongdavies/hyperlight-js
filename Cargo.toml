@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["src/hyperlight-js", "src/js-host-api", "src/hyperlight-js-runtime"]
+members = ["src/hyperlight-js", "src/js-host-api", "src/hyperlight-js-runtime", "src/hyperlight-js-common"]
 
 [workspace.package]
 version = "0.2.5"
@@ -15,6 +15,7 @@ hyperlight-guest-bin = { version = "0.15.0", features = ["libc"] }
 hyperlight-host = { version = "0.15.0", default-features = false }
 
 hyperlight-js = { version = "0.2.5", path = "src/hyperlight-js" }
+hyperlight-js-common = { version = "0.2.5", path = "src/hyperlight-js-common" }
 hyperlight-js-runtime = { version = "0.2.5", path = "src/hyperlight-js-runtime" }
 
 [profile.dev]
