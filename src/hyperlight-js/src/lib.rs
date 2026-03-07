@@ -32,6 +32,8 @@ use hyperlight_host::func::HostFunction;
 pub use sandbox::host_fn::FnReturn;
 /// A Hyperlight Sandbox with a JavaScript run time loaded but no guest code.
 pub use sandbox::js_sandbox::JSSandbox;
+/// Default namespace for user modules added via [`JSSandbox::add_module`].
+pub use sandbox::js_sandbox::DEFAULT_MODULE_NAMESPACE;
 /// A Hyperlight Sandbox with a JavaScript run time loaded and guest code loaded.
 pub use sandbox::loaded_js_sandbox::LoadedJSSandbox;
 /// A Hyperlight Sandbox with no JavaScript run time loaded and no guest code.
