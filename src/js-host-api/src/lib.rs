@@ -435,6 +435,44 @@ impl SandboxBuilderWrapper {
             inner: Arc::new(Mutex::new(Some(proto_sandbox))),
         })
     }
+
+    /// Set a callback that receives guest `console.log` / `print` output.
+    ///
+    /// Without this, guest print output is silently discarded. The callback
+    /// receives each print message as a string.
+    ///
+    /// @param callback - `(message: string) => void` — called for each print
+    /// @returns this (for chaining)
+    /// @throws If the builder has already been consumed by `build()`
+    #[napi]
+    pub fn set_host_print_fn(
+        &self,
+        #[napi(ts_arg_type = "(message: string) => void")] callback: ThreadsafeFunction<
+            String, // Rust → JS argument type
+            (),     // JS return type (void)
+            String, // JS → Rust argument type (same — identity mapping)
+            Status, // Error status type
+            false,  // Not CallerHandled (napi manages errors)
+            false,  // Not accepting unknown return types
+        >,
+    ) -> napi::Result<&Self> {
+        self.with_inner(|b| {
+            // Blocking mode is intentional: the guest's print/console.log call
+            // is synchronous — the guest must wait for the print to complete
+            // before continuing execution. Unlike host functions (which use
+            // NonBlocking + oneshot channel for async Promise resolution),
+            // print is fire-and-forget with no return value to await.
+            let print_fn = move |msg: String| -> i32 {
+                let status = callback.call(msg, ThreadsafeFunctionCallMode::Blocking);
+                if status == Status::Ok {
+                    0
+                } else {
+                    -1
+                }
+            };
+            b.with_host_print_fn(print_fn.into())
+        })
+    }
 }
 
 // ── ProtoJSSandbox ───────────────────────────────────────────────────
