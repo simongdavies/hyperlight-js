@@ -527,9 +527,11 @@ fn user_module_can_import_host_function() {
 
     let mut proto = SandboxBuilder::new().build().unwrap();
     proto
-        .register("db", "lookup", |id: i32| {
-            serde_json::json!({ "id": id, "name": format!("User {}", id) })
-        })
+        .register(
+            "db",
+            "lookup",
+            |id: i32| serde_json::json!({ "id": id, "name": format!("User {}", id) }),
+        )
         .unwrap();
 
     let mut sandbox = proto.load_runtime().unwrap();

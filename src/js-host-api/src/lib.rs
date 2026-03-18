@@ -441,6 +441,9 @@ impl SandboxBuilderWrapper {
     /// Without this, guest print output is silently discarded. The callback
     /// receives each print message as a string.
     ///
+    /// **Important:** The callback must not throw. Exceptions thrown inside
+    /// the callback escape as unhandled errors and will crash the process.
+    ///
     /// @param callback - `(message: string) => void` — called for each print
     /// @returns this (for chaining)
     /// @throws If the builder has already been consumed by `build()`
