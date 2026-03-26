@@ -1259,6 +1259,20 @@ impl JSSandboxWrapper {
     pub fn poisoned(&self) -> napi::Result<bool> {
         self.with_inner_ref(|sandbox| Ok(sandbox.poisoned()))
     }
+
+    /// Eagerly release the underlying sandbox resources.
+    ///
+    /// After calling `dispose()`, the sandbox is consumed and all
+    /// subsequent method calls will throw an `ERR_CONSUMED` error.
+    /// This is useful when you want deterministic cleanup rather than
+    /// waiting for garbage collection.
+    ///
+    /// Calling `dispose()` on an already-consumed sandbox is a no-op.
+    #[napi]
+    pub fn dispose(&self) -> napi::Result<()> {
+        let _ = self.inner.lock().map_err(|_| lock_error())?.take();
+        Ok(())
+    }
 }
 
 // ── LoadedJSSandbox ──────────────────────────────────────────────────
@@ -1602,6 +1616,20 @@ impl LoadedJSSandboxWrapper {
         })
         .await
         .map_err(join_error)?
+    }
+
+    /// Eagerly release the underlying sandbox resources.
+    ///
+    /// After calling `dispose()`, the sandbox is consumed and all
+    /// subsequent method calls will throw an `ERR_CONSUMED` error.
+    /// This is useful when you want deterministic cleanup rather than
+    /// waiting for garbage collection.
+    ///
+    /// Calling `dispose()` on an already-consumed sandbox is a no-op.
+    #[napi]
+    pub fn dispose(&self) -> napi::Result<()> {
+        let _ = self.inner.lock().map_err(|_| lock_error())?.take();
+        Ok(())
     }
 }
 
