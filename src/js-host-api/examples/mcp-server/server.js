@@ -44,8 +44,8 @@ const DEFAULT_WALL_CLOCK_TIMEOUT_MS = 5000;
 /** Default guest heap size in megabytes. */
 const DEFAULT_HEAP_SIZE_MB = 16;
 
-/** Default guest stack size in megabytes. */
-const DEFAULT_STACK_SIZE_MB = 1;
+/** Default guest scratch size in megabytes. */
+const DEFAULT_SCRATCH_SIZE_MB = 1;
 
 // ── Configuration ────────────────────────────────────────────────────
 //
@@ -93,9 +93,10 @@ const WALL_CLOCK_TIMEOUT_MS = parsePositiveInt(
 const HEAP_SIZE_BYTES =
     parsePositiveInt(process.env.HYPERLIGHT_HEAP_SIZE_MB, DEFAULT_HEAP_SIZE_MB) * 1024 * 1024;
 
-/** Guest stack size in bytes. Override with HYPERLIGHT_STACK_SIZE_MB (megabytes). */
-const STACK_SIZE_BYTES =
-    parsePositiveInt(process.env.HYPERLIGHT_STACK_SIZE_MB, DEFAULT_STACK_SIZE_MB) * 1024 * 1024;
+/** Guest scratch size in bytes. Override with HYPERLIGHT_SCRATCH_SIZE_MB (megabytes).
+ *  Maps to setScratchSize() on the SandboxBuilder API. */
+const SCRATCH_SIZE_BYTES =
+    parsePositiveInt(process.env.HYPERLIGHT_SCRATCH_SIZE_MB, DEFAULT_SCRATCH_SIZE_MB) * 1024 * 1024;
 
 /**
  * Path to a timing log file. When set (via the HYPERLIGHT_TIMING_LOG
@@ -134,7 +135,7 @@ const CODE_LOG_PATH = process.env.HYPERLIGHT_CODE_LOG || null;
 // timeout or unrecoverable error, jsSandbox is set to null and
 // rebuilt on the next call.
 
-/** @type {import('../../index.d.ts').JSSandbox | null} */
+/** @type {import('../../lib.js').JSSandbox | null} */
 let jsSandbox = null;
 
 /**
@@ -144,7 +145,7 @@ let jsSandbox = null;
 async function initializeSandbox() {
     const builder = new SandboxBuilder();
     builder.setHeapSize(HEAP_SIZE_BYTES);
-    builder.setStackSize(STACK_SIZE_BYTES);
+    builder.setScratchSize(SCRATCH_SIZE_BYTES);
 
     const proto = await builder.build();
     jsSandbox = await proto.loadRuntime();
@@ -313,7 +314,7 @@ mcpServer.registerTool(
             'The code runs as the body of a function — use `return` to produce',
             `a JSON-serializable result. CPU time is hard-limited to ${CPU_TIMEOUT_MS}ms`,
             `with a ${WALL_CLOCK_TIMEOUT_MS}ms wall-clock backstop.`,
-            `Memory: ${HEAP_SIZE_BYTES / (1024 * 1024)}MB heap, ${STACK_SIZE_BYTES / (1024 * 1024)}MB stack.`,
+            `Memory: ${HEAP_SIZE_BYTES / (1024 * 1024)}MB heap, ${SCRATCH_SIZE_BYTES / (1024 * 1024)}MB scratch.`,
             '',
             'The sandbox has NO access to:',
             '  - Filesystem, network, or host environment',
@@ -353,19 +354,59 @@ mcpServer.registerTool(
             }
         }
 
+        const safeStringifyResult = (value) => {
+            const seen = new WeakSet();
+            return JSON.stringify(
+                value,
+                (key, val) => {
+                    if (typeof val === 'bigint') {
+                        // Represent BigInt values as strings to avoid JSON.stringify throwing.
+                        return val.toString();
+                    }
+                    if (typeof val === 'object' && val !== null) {
+                        if (seen.has(val)) {
+                            // Replace circular references with a placeholder.
+                            return '[Circular]';
+                        }
+                        seen.add(val);
+                    }
+                    return val;
+                },
+                2
+            );
+        };
+
         const startTime = Date.now();
         const { success, result, error } = await executeJavaScript(code);
         const elapsed = Date.now() - startTime;
 
         if (success) {
-            return {
-                content: [
-                    {
-                        type: 'text',
-                        text: JSON.stringify(result, null, 2),
-                    },
-                ],
-            };
+            try {
+                const serialized = safeStringifyResult(result);
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: serialized,
+                        },
+                    ],
+                };
+            } catch (serializeError) {
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text:
+                                `❌ Failed to serialize sandbox result: ` +
+                                (serializeError instanceof Error
+                                    ? serializeError.message
+                                    : String(serializeError)) +
+                                `\n\n(elapsed: ${elapsed}ms)`,
+                        },
+                    ],
+                    isError: true,
+                };
+            }
         } else {
             return {
                 content: [
@@ -390,7 +431,7 @@ console.error('🔒 Hyperlight JS MCP Server running on stdio');
 console.error(`   CPU timeout:       ${CPU_TIMEOUT_MS}ms`);
 console.error(`   Wall-clock timeout: ${WALL_CLOCK_TIMEOUT_MS}ms`);
 console.error(`   Heap size:          ${HEAP_SIZE_BYTES / (1024 * 1024)}MB`);
-console.error(`   Stack size:         ${STACK_SIZE_BYTES / (1024 * 1024)}MB`);
+console.error(`   Scratch size:       ${SCRATCH_SIZE_BYTES / (1024 * 1024)}MB`);
 
 // ── Graceful Shutdown ───────────────────────────────────────────────
 

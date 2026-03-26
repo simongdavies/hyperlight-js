@@ -24,24 +24,62 @@ function send(proc, message) {
     proc.stdin.write(JSON.stringify(message) + '\n');
 }
 
+// Shared per-process line reader state: buffer, queued lines, and waiters.
+const procLineState = new WeakMap();
+
+function ensureLineReader(proc) {
+    let state = procLineState.get(proc);
+    if (state) return state;
+
+    state = {
+        buffer: '',
+        lines: [],
+        waiters: [],
+    };
+
+    const onData = (chunk) => {
+        state.buffer += chunk.toString();
+        let idx;
+        while ((idx = state.buffer.indexOf('\n')) !== -1) {
+            let line = state.buffer.slice(0, idx).replace(/\r$/, '');
+            state.buffer = state.buffer.slice(idx + 1);
+            if (line.length === 0) {
+                continue;
+            }
+
+            if (state.waiters.length > 0) {
+                const { resolve, reject } = state.waiters.shift();
+                try {
+                    resolve(JSON.parse(line));
+                } catch (_err) {
+                    reject(new Error(`Invalid JSON from server: ${line}`));
+                }
+            } else {
+                state.lines.push(line);
+            }
+        }
+    };
+
+    proc.stdout.on('data', onData);
+    procLineState.set(proc, state);
+    return state;
+}
+
 function waitForResponse(proc) {
     return new Promise((resolve, reject) => {
-        let buffer = '';
-        const onData = (chunk) => {
-            buffer += chunk.toString();
-            const idx = buffer.indexOf('\n');
-            if (idx === -1) return;
-            const line = buffer.slice(0, idx).replace(/\r$/, '');
-            buffer = buffer.slice(idx + 1);
-            proc.stdout.off('data', onData);
-            if (line.length === 0) return;
+        const state = ensureLineReader(proc);
+
+        if (state.lines.length > 0) {
+            const line = state.lines.shift();
             try {
                 resolve(JSON.parse(line));
             } catch (_err) {
                 reject(new Error(`Invalid JSON from server: ${line}`));
             }
-        };
-        proc.stdout.on('data', onData);
+            return;
+        }
+
+        state.waiters.push({ resolve, reject });
     });
 }
 
@@ -53,7 +91,7 @@ function waitForResponse(proc) {
 
 // ── Mathematics ─────────────────────────────────────────────────────
 
-/** Prompt: "Calculate π to 50 decimal places using the Bailey–Borwein–Plouffe formula" */
+/** Prompt: "Calculate π to 50 decimal places using Machin's formula" */
 const PI_50_DIGITS_CODE = `
 // Machin's formula: π/4 = 4·arctan(1/5) - arctan(1/239)
 // (BBP naturally produces hex digits; Machin is better for decimal output)
