@@ -25,7 +25,7 @@ use anyhow::{bail, ensure, Context as _};
 use base64::Engine as _;
 use hashbrown::HashMap;
 use hyperlight_js_common::{FnReturn, MARKER_BUFFER, PLACEHOLDER_BIN};
-use rquickjs::loader::{Loader, Resolver};
+use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::module::{Declarations, Exports, ModuleDef};
 use rquickjs::prelude::Rest;
 use rquickjs::{Array, Ctx, Exception, Function, JsLifetime, Module, TypedArray, Value};
@@ -501,7 +501,13 @@ pub struct HostModuleLoader {
 }
 
 impl Resolver for HostModuleLoader {
-    fn resolve(&mut self, _ctx: &Ctx<'_>, base: &str, name: &str) -> rquickjs::Result<String> {
+    fn resolve<'js>(
+        &mut self,
+        _ctx: &Ctx<'js>,
+        base: &str,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<String> {
         if !self.borrow().contains_key(name) {
             return Err(rquickjs::Error::new_resolving(base, name));
         }
@@ -510,7 +516,12 @@ impl Resolver for HostModuleLoader {
 }
 
 impl Loader for HostModuleLoader {
-    fn load<'js>(&mut self, ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Module<'js>> {
+    fn load<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<Module<'js>> {
         if !self.borrow().contains_key(name) {
             return Err(rquickjs::Error::new_loading(name));
         }

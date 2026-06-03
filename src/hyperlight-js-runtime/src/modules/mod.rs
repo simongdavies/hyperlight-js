@@ -16,7 +16,7 @@ limitations under the License.
 use alloc::string::{String, ToString as _};
 
 use hashbrown::HashMap;
-use rquickjs::loader::{Loader, Resolver};
+use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::module::ModuleDef;
 use rquickjs::{Ctx, Module, Result};
 use spin::{Lazy, Mutex};
@@ -113,7 +113,13 @@ fn ensure_custom_modules_init() {
 pub struct NativeModuleLoader;
 
 impl Resolver for NativeModuleLoader {
-    fn resolve(&mut self, _ctx: &Ctx<'_>, base: &str, name: &str) -> Result<String> {
+    fn resolve<'js>(
+        &mut self,
+        _ctx: &Ctx<'js>,
+        base: &str,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> Result<String> {
         ensure_custom_modules_init();
         if CUSTOM_MODULES.lock().contains_key(name) || BUILTIN_MODULES.contains_key(name) {
             Ok(name.to_string())
@@ -124,7 +130,12 @@ impl Resolver for NativeModuleLoader {
 }
 
 impl Loader for NativeModuleLoader {
-    fn load<'js>(&mut self, ctx: &Ctx<'js>, name: &str) -> Result<Module<'js>> {
+    fn load<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> Result<Module<'js>> {
         ensure_custom_modules_init();
         // Check custom modules first
         if let Some(decl) = CUSTOM_MODULES.lock().get(name) {
