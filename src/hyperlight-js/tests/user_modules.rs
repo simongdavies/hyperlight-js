@@ -526,14 +526,9 @@ fn user_module_can_import_host_function() {
     );
 
     let mut proto = SandboxBuilder::new().build().unwrap();
-    proto.host_module("host:db").register_raw(
+    proto.host_module("host:db").register(
         "lookup",
-        |args: String| -> hyperlight_js::Result<String> {
-            let parsed: serde_json::Value = serde_json::from_str(&args).unwrap();
-            let id = parsed[0].as_i64().unwrap();
-            let result = serde_json::json!({ "id": id, "name": format!("User {}", id) });
-            Ok(serde_json::to_string(&result).unwrap())
-        },
+        |id: i64| serde_json::json!({ "id": id, "name": format!("User {}", id) }),
     );
 
     let mut sandbox = proto.load_runtime().unwrap();

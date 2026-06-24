@@ -63,7 +63,13 @@ struct UserModuleLoader {
 }
 
 impl Resolver for UserModuleLoader {
-    fn resolve(&mut self, _ctx: &Ctx<'_>, base: &str, name: &str) -> Result<String> {
+    fn resolve(
+        &mut self,
+        _ctx: &Ctx<'_>,
+        base: &str,
+        name: &str,
+        _attributes: Option<ImportAttributes<'_>>,
+    ) -> Result<String> {
         if self.modules.borrow().contains_key(name) {
             Ok(name.to_string())
         } else {
@@ -73,7 +79,12 @@ impl Resolver for UserModuleLoader {
 }
 
 impl Loader for UserModuleLoader {
-    fn load<'js>(&mut self, ctx: &Ctx<'js>, name: &str) -> Result<Module<'js>> {
+    fn load<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> Result<Module<'js>> {
         let source = self
             .modules
             .borrow()

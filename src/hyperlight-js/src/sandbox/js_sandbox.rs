@@ -553,6 +553,8 @@ mod tests {
             .handle_event("handler", "{}".to_string(), None)
             .unwrap();
         assert_eq!(res, r#"{"result":"inline-export"}"#);
+    }
+
     // ── Module unit tests ────────────────────────────────────────────
 
     #[test]
