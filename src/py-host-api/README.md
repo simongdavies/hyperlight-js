@@ -20,6 +20,32 @@ SandboxBuilder → build() → ProtoJSSandbox → load_runtime()
   `cargo-hyperlight` cross-compile target), since the runtime is built into the
   `hyperlight-js` crate.
 
+## Install
+
+There is no published PyPI wheel. Install straight from the git repository — pip
+(or uv) builds the abi3 wheel from source via the maturin backend. The build host
+needs a **Rust toolchain** and the **Hyperlight guest toolchain** (clang) on
+`PATH`; the resulting wheel then runs anywhere with a supported hypervisor.
+
+```bash
+# pip — point at the repo + the crate's subdirectory:
+pip install "git+https://github.com/hyperlight-dev/hyperlight-js@main#subdirectory=src/py-host-api"
+```
+
+Pin to a tag or commit for reproducibility by replacing `@main` with `@<tag>` or
+`@<sha>`.
+
+For a [uv](https://docs.astral.sh/uv/)-managed project, declare it as a git
+source:
+
+```toml
+[project]
+dependencies = ["hyperlight-js"]
+
+[tool.uv.sources]
+hyperlight-js = { git = "https://github.com/hyperlight-dev/hyperlight-js", subdirectory = "src/py-host-api", branch = "main" }
+```
+
 ## Build
 
 Built with [maturin](https://www.maturin.rs/):
