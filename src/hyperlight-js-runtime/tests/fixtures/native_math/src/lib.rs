@@ -14,15 +14,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 #![cfg_attr(hyperlight, no_std)]
-#![cfg_attr(hyperlight, no_main)]
 
-// Provide the `init_native_modules` symbol required by NativeModuleLoader.
-// The default binary registers no custom modules; extender binaries list theirs
-// here instead. See docs/extending-runtime.md.
-hyperlight_js_runtime::native_modules! {}
+//! A custom native module providing basic math operations.
+//! Used as a test fixture for the native module extension system.
 
-// The hyperlight guest entry point (hyperlight_main, the guest functions, etc.)
-// is provided by the library's `guest` module for the Hyperlight target. The
-// binary only needs to supply the native CLI entry point.
-#[cfg(not(hyperlight))]
-include!("main/native.rs");
+#[rquickjs::module(rename_vars = "camelCase")]
+pub mod math {
+    /// Add two numbers.
+    #[rquickjs::function]
+    pub fn add(a: f64, b: f64) -> f64 {
+        a + b
+    }
+
+    /// Multiply two numbers.
+    #[rquickjs::function]
+    pub fn multiply(a: f64, b: f64) -> f64 {
+        a * b
+    }
+}

@@ -19,7 +19,7 @@ use hashbrown::HashMap;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::module::ModuleDef;
 use rquickjs::{Ctx, Module, Result};
-use spin::LazyLock;
+use spin::{LazyLock, Mutex};
 
 pub mod console;
 pub mod crypto;
@@ -30,8 +30,9 @@ pub mod require;
 #[derive(Clone)]
 pub struct NativeModuleLoader;
 
-/// A function pointer type for declaring a module.
-type ModuleDeclarationFn = for<'js> fn(Ctx<'js>, &str) -> Result<Module<'js>>;
+/// A function pointer type for declaring a native module.
+#[doc(hidden)]
+pub type ModuleDeclarationFn = for<'js> fn(Ctx<'js>, &str) -> Result<Module<'js>>;
 
 /// This function returns a function pointer that when called declares a module
 /// of type M.
@@ -40,14 +41,17 @@ type ModuleDeclarationFn = for<'js> fn(Ctx<'js>, &str) -> Result<Module<'js>>;
 /// However, if we try to get a function pointer from `Module::declare_def::<M>` directly,
 /// we get issues due to lifetime conflicts. This function works around that conflict
 /// by explicitly defining the lifetimes and returning a function pointer with the correct signature.
-fn declaration<M: ModuleDef>() -> ModuleDeclarationFn {
+#[doc(hidden)]
+pub fn declaration<M: ModuleDef>() -> ModuleDeclarationFn {
     fn declare<'js, M: ModuleDef>(ctx: Ctx<'js>, name: &str) -> Result<Module<'js>> {
         Module::declare_def::<M, _>(ctx, name)
     }
     declare::<M>
 }
 
-static NATIVE_MODULES: LazyLock<HashMap<&str, ModuleDeclarationFn>> = LazyLock::new(|| {
+// ── Built-in modules ───────────────────────────────────────────────────────
+
+static BUILTIN_MODULES: LazyLock<HashMap<&str, ModuleDeclarationFn>> = LazyLock::new(|| {
     HashMap::from([
         ("io", declaration::<io::js_io>()),
         ("crypto", declaration::<crypto::js_crypto>()),
@@ -55,6 +59,55 @@ static NATIVE_MODULES: LazyLock<HashMap<&str, ModuleDeclarationFn>> = LazyLock::
         ("require", declaration::<require::js_require>()),
     ])
 });
+
+/// Returns the names of all built-in native modules.
+pub fn builtin_module_names() -> alloc::vec::Vec<&'static str> {
+    BUILTIN_MODULES.keys().copied().collect()
+}
+
+// ── Custom module registry ─────────────────────────────────────────────────
+//
+// Extender crates register their custom native modules here via
+// `register_native_module`. The NativeModuleLoader checks this registry first,
+// then falls back to the built-in modules.
+
+static CUSTOM_MODULES: LazyLock<Mutex<HashMap<&'static str, ModuleDeclarationFn>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Register a custom native module by name.
+///
+/// The module becomes available to JavaScript via `import { ... } from "name"`.
+/// Custom modules cannot shadow built-in modules (io, crypto, console, require).
+///
+/// This is typically called via the [`native_modules!`] macro rather than
+/// directly.
+///
+/// # Panics
+///
+/// Panics if `name` collides with a built-in module name.
+pub fn register_native_module(name: &'static str, decl: ModuleDeclarationFn) {
+    if BUILTIN_MODULES.contains_key(name) {
+        panic!(
+            "Cannot register custom native module '{name}': name conflicts with a built-in module"
+        );
+    }
+    CUSTOM_MODULES.lock().insert(name, decl);
+}
+
+// Ensure custom modules are initialised before the loader is first used. The
+// `init_native_modules` symbol is provided by the binary crate via the
+// `native_modules!` macro. We call it lazily on first loader access so neither
+// the native CLI nor extender binaries need to call it explicitly.
+static CUSTOM_MODULES_INIT: spin::Once = spin::Once::new();
+
+fn ensure_custom_modules_init() {
+    CUSTOM_MODULES_INIT.call_once(|| {
+        unsafe extern "Rust" {
+            fn init_native_modules();
+        }
+        unsafe { init_native_modules() };
+    });
+}
 
 impl Resolver for NativeModuleLoader {
     fn resolve(
@@ -64,7 +117,8 @@ impl Resolver for NativeModuleLoader {
         name: &str,
         _attributes: Option<ImportAttributes<'_>>,
     ) -> Result<String> {
-        if NATIVE_MODULES.contains_key(name) {
+        ensure_custom_modules_init();
+        if CUSTOM_MODULES.lock().contains_key(name) || BUILTIN_MODULES.contains_key(name) {
             Ok(name.to_string())
         } else {
             Err(rquickjs::Error::new_resolving(base, name))
@@ -79,10 +133,51 @@ impl Loader for NativeModuleLoader {
         name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> Result<Module<'js>> {
-        if let Some(declaration) = NATIVE_MODULES.get(name) {
-            declaration(ctx.clone(), name)
-        } else {
-            Err(rquickjs::Error::new_loading(name))
+        ensure_custom_modules_init();
+        // Check custom modules first
+        if let Some(decl) = CUSTOM_MODULES.lock().get(name) {
+            return decl(ctx.clone(), name);
         }
+        // Fall back to built-in modules
+        if let Some(decl) = BUILTIN_MODULES.get(name) {
+            return decl(ctx.clone(), name);
+        }
+        Err(rquickjs::Error::new_loading(name))
     }
+}
+
+/// Register custom native modules and generate the `init_native_modules`
+/// entry point that the hyperlight guest calls during startup.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[rquickjs::module(rename_vars = "camelCase")]
+/// mod math {
+///     #[rquickjs::function]
+///     pub fn add(a: f64, b: f64) -> f64 { a + b }
+/// }
+///
+/// hyperlight_js_runtime::native_modules! {
+///     "math" => js_math,
+/// }
+/// ```
+///
+/// Custom module names **cannot** shadow built-in modules (`io`, `crypto`,
+/// `console`, `require`). Attempting to do so will panic at startup.
+#[macro_export]
+macro_rules! native_modules {
+    ($($name:expr => $module:ty),* $(,)?) => {
+        /// Called by the hyperlight guest entry point to register custom
+        /// native modules before the JS runtime is initialised.
+        #[unsafe(no_mangle)]
+        pub fn init_native_modules() {
+            $(
+                $crate::modules::register_native_module(
+                    $name,
+                    $crate::modules::declaration::<$module>(),
+                );
+            )*
+        }
+    };
 }

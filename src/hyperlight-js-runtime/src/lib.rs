@@ -14,13 +14,22 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 #![no_std]
-#![no_main]
 extern crate alloc;
 
 mod globals;
+/// Hyperlight guest entry point — provides `hyperlight_main`,
+/// `guest_dispatch_function`, and all guest plumbing. Only compiled for the
+/// Hyperlight VM target so extender binaries reuse it via the library.
+#[cfg(hyperlight)]
+mod guest;
 pub mod host;
 mod host_fn;
-mod modules;
+/// Native module infrastructure for the JS runtime.
+///
+/// Contains the built-in native modules (io, crypto, console, require) and the
+/// [`native_modules!`] macro for extending the runtime with custom native
+/// modules in downstream crates.
+pub mod modules;
 pub(crate) mod utils;
 
 use alloc::format;

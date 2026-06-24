@@ -13,7 +13,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-extern crate alloc;
+
+//! Hyperlight guest entry point and infrastructure.
+//!
+//! Provides the guest-side plumbing to run the JS runtime inside a Hyperlight
+//! VM: the [`crate::host::Host`] implementation that calls out to hyperlight
+//! host functions, the `hyperlight_main` entry point, the guest-function
+//! registrations, and the libc stubs QuickJS requires.
+//!
+//! Compiled only for the Hyperlight VM target (`cfg(hyperlight)`); built into
+//! the library so extender binaries reuse it for free.
 
 use alloc::format;
 use alloc::string::String;
@@ -22,15 +31,16 @@ use anyhow::{anyhow, Context as _};
 use hashbrown::HashMap;
 use hyperlight_guest_bin::error::{ErrorCode, HyperlightGuestError, Result};
 use hyperlight_guest_bin::{guest_function, host_function, main};
-use hyperlight_js_runtime::JsRuntime;
 use spin::Mutex;
 use tracing::instrument;
+
+use crate::JsRuntime;
 
 mod stubs;
 
 struct Host;
 
-pub trait CatchGuestErrorExt {
+trait CatchGuestErrorExt {
     type Ok;
     fn catch(self) -> anyhow::Result<Self::Ok>;
 }
@@ -42,7 +52,7 @@ impl<T> CatchGuestErrorExt for Result<T> {
     }
 }
 
-impl hyperlight_js_runtime::host::Host for Host {
+impl crate::host::Host for Host {
     fn resolve_module(&self, base: String, name: String) -> anyhow::Result<String> {
         #[host_function("ResolveModule")]
         fn resolve_module(base: String, name: String) -> Result<String>;
