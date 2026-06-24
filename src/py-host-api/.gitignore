@@ -1,0 +1,12 @@
+# Rust build output
+/target
+
+# Python build / test artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+*.so
+*.pyd
+build/
+dist/
+*.egg-info/

@@ -51,6 +51,9 @@ clippy target=default-target features="": (ensure-tools)
         --profile={{ if target == "debug" {"dev"} else { target } }} \
         {{ if features =="" {''} else if features=="no-default-features" {"--no-default-features" } else {"--no-default-features -F " + features } }} \
         -- -D warnings
+    cargo clippy --manifest-path src/py-host-api/Cargo.toml --all-targets \
+        --profile={{ if target == "debug" {"dev"} else { target } }} \
+        -- -D warnings
 
 clippy-apply-fix-unix:
     cd src/hyperlight-js-runtime && \
@@ -68,6 +71,7 @@ fmt-check-rust:
     cargo +nightly fmt --all -- --check
     cargo +nightly fmt --manifest-path src/hyperlight-js-runtime/Cargo.toml -- --check
     cargo +nightly fmt --manifest-path src/js-host-api/Cargo.toml -- --check
+    cargo +nightly fmt --manifest-path src/py-host-api/Cargo.toml -- --check
 
 fmt-check-js: check-npm
     cd src/js-host-api && npm install
@@ -81,6 +85,7 @@ fmt-apply-rust:
     cargo +nightly fmt --all
     cargo +nightly fmt --manifest-path src/hyperlight-js-runtime/Cargo.toml
     cargo +nightly fmt --manifest-path src/js-host-api/Cargo.toml
+    cargo +nightly fmt --manifest-path src/py-host-api/Cargo.toml
 
 fmt-apply-js: check-npm
     cd src/js-host-api && npm install
@@ -117,6 +122,12 @@ build-rust-trace target=default-target features="":
 build-js-host-api target=default-target features="": check-npm (build-rust target features)
     cd src/js-host-api && npm install
     cd src/js-host-api && npx napi build --platform {{ if target == "release" { "--release" } else { "" } }} {{ if features == "" { "" } else { "--features=" + features } }}
+
+# Build the Python host binding wheel (pyo3 / maturin). Produces an abi3 wheel
+# (CPython 3.9+) under src/py-host-api/target/wheels. Kept out of the default
+# `build` aggregate so a plain `just build` never needs a Python interpreter.
+build-py target=default-target:
+    cd src/py-host-api && maturin build {{ if target == "release" { "--release" } else { "" } }}
 
 build-all: (build "debug") (build "release")
     @echo "✅ All builds complete!"
@@ -187,6 +198,14 @@ test-native-modules target=default-target: (ensure-tools)
         -- --ignored --nocapture
     @echo "Rebuilding hyperlight-js with default guest runtime..."
     cd src/hyperlight-js && cargo build --profile={{ if target == "debug" {"dev"} else { target } }}
+
+# Build + install the Python host binding into the active environment and run its
+# pytest suite. Requires an active Python environment (CI provisions a venv) and a
+# hypervisor for the VM-backed tests (others run anywhere). Kept out of `test-all`
+# so the core test flow never needs a Python interpreter.
+test-py target=default-target: (build-py target)
+    cd src/py-host-api && maturin develop {{ if target == "release" { "--release" } else { "" } }}
+    cd src/py-host-api && python -m pytest tests -v
 
 # Run js-host-api examples (simple.js, calculator.js, unload.js, interrupt.js, cpu-timeout.js, host-functions.js)
 run-js-host-api-examples target=default-target features="": (build-js-host-api target features)
