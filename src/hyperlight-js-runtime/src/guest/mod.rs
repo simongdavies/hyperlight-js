@@ -27,6 +27,7 @@ limitations under the License.
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+
 use anyhow::{anyhow, Context as _};
 use hashbrown::HashMap;
 use hyperlight_guest_bin::error::{ErrorCode, HyperlightGuestError, Result};
@@ -163,4 +164,9 @@ fn register_host_modules(host_modules_json: String) -> Result<()> {
 #[guest_function("RunHandler")]
 fn run_handler(function_name: String, event: String, run_gc: bool) -> Result<String> {
     Ok(RUNTIME.lock().run_handler(function_name, event, run_gc)?)
+}
+
+#[guest_function("Eval")]
+fn eval(code: String, run_gc: bool) -> Result<String> {
+    Ok(RUNTIME.lock().eval(code, run_gc)?)
 }

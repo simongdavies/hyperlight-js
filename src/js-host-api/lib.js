@@ -144,7 +144,7 @@ function wrapGetter(cls, prop) {
 }
 
 // LoadedJSSandbox — async methods
-for (const method of ['callHandler', 'unload', 'snapshot', 'restore', 'dispose']) {
+for (const method of ['callHandler', 'eval', 'unload', 'snapshot', 'restore', 'dispose']) {
     const orig = LoadedJSSandbox.prototype[method];
     if (!orig) throw new Error(`Cannot wrap missing method: LoadedJSSandbox.${method}`);
     LoadedJSSandbox.prototype[method] = wrapAsync(orig);

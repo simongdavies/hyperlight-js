@@ -443,6 +443,9 @@ describe('LoadedJSSandbox.unload()', () => {
         await loaded.unload();
 
         expectThrowsWithCode(() => loaded.lastCallStats, 'ERR_CONSUMED');
+    });
+});
+
 // ── Host print function ──────────────────────────────────────────────
 
 describe('setHostPrintFn', () => {

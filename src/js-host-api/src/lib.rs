@@ -1551,6 +1551,131 @@ impl LoadedJSSandboxWrapper {
         })
     }
 
+    /// Evaluate arbitrary JavaScript against the sandbox's persistent global
+    /// context (REPL semantics) and return the completion value.
+    ///
+    /// Unlike `callHandler`, this runs `code` as global script code rather than
+    /// invoking a named handler. Top-level `var`/`let`/`const`/`function`/
+    /// `class` declarations are added to the shared global scope and persist
+    /// across subsequent `eval` and `callHandler` calls — exactly like a
+    /// `quickjs` REPL.
+    ///
+    /// The completion value is returned as a parsed JavaScript value. A value of
+    /// `undefined` — or any value that is not JSON-serializable (e.g. a
+    /// function) — resolves to `null` rather than throwing.
+    ///
+    /// Returns a `Promise` — the Node.js event loop stays free while the guest
+    /// executes on a background thread. Concurrent calls to the same sandbox
+    /// serialize via an internal lock.
+    ///
+    /// When `options` is omitted (or contains no timeouts), the code runs
+    /// without monitors. When timeouts are set, monitors race with **OR
+    /// semantics** — whichever fires first terminates execution.
+    ///
+    /// ```js
+    /// await loaded.eval('let total = 0;');
+    /// await loaded.eval('total += 5; total'); // 5
+    ///
+    /// // With monitors — recommended for untrusted code
+    /// const result = await loaded.eval('expensiveComputation()', {
+    ///     wallClockTimeoutMs: 5000,
+    ///     cpuTimeoutMs: 500,
+    /// });
+    /// ```
+    ///
+    /// @param code - JavaScript source to evaluate
+    /// @param options - Optional timeout/GC configuration
+    /// @returns A `Promise` resolving to the completion value
+    /// @throws On guest execution error, or `ERR_CANCELLED` if a monitor fires
+    #[napi]
+    pub async fn eval(
+        &self,
+        code: String,
+        options: Option<CallHandlerOptions>,
+    ) -> napi::Result<JsonValue> {
+        if code.is_empty() {
+            return Err(invalid_arg_error("Eval code must not be empty"));
+        }
+
+        let options = options.unwrap_or_default();
+
+        // Validate timeout values eagerly before spawning a blocking task
+        // (same bounds and rationale as callHandler).
+        if let Some(wall_ms) = options.wall_clock_timeout_ms
+            && !(MIN_TIMEOUT_MS..=MAX_TIMEOUT_MS).contains(&wall_ms)
+        {
+            return Err(invalid_arg_error(&format!(
+                "wallClockTimeoutMs must be between {MIN_TIMEOUT_MS}ms and {MAX_TIMEOUT_MS}ms, got {wall_ms}"
+            )));
+        }
+        if let Some(cpu_ms) = options.cpu_timeout_ms
+            && !(MIN_TIMEOUT_MS..=MAX_TIMEOUT_MS).contains(&cpu_ms)
+        {
+            return Err(invalid_arg_error(&format!(
+                "cpuTimeoutMs must be between {MIN_TIMEOUT_MS}ms and {MAX_TIMEOUT_MS}ms, got {cpu_ms}"
+            )));
+        }
+
+        let poisoned_flag = self.poisoned_flag.clone();
+        let last_call_stats_store = self.last_call_stats.clone();
+        let gc = options.gc;
+        let wall_clock_timeout_ms = options.wall_clock_timeout_ms;
+        let cpu_timeout_ms = options.cpu_timeout_ms;
+
+        let result_json = self
+            .with_blocking_inner(move |mut sandbox| {
+                // Mirror callHandler's monitor dispatch: each arm constructs a
+                // distinct concrete monitor type (the sealed `MonitorSet` trait
+                // is not object-safe), so the match is structurally required.
+                let result = match (wall_clock_timeout_ms, cpu_timeout_ms) {
+                    (None, None) => sandbox.eval(code, gc).map_err(to_napi_error),
+                    (Some(wall_ms), Some(cpu_ms)) => {
+                        let monitor = (
+                            WallClockMonitor::new(Duration::from_millis(wall_ms as u64))
+                                .map_err(to_napi_error)?,
+                            CpuTimeMonitor::new(Duration::from_millis(cpu_ms as u64))
+                                .map_err(to_napi_error)?,
+                        );
+                        sandbox
+                            .eval_with_monitor(code, &monitor, gc)
+                            .map_err(to_napi_error)
+                    }
+                    (Some(wall_ms), None) => {
+                        let monitor = WallClockMonitor::new(Duration::from_millis(wall_ms as u64))
+                            .map_err(to_napi_error)?;
+                        sandbox
+                            .eval_with_monitor(code, &monitor, gc)
+                            .map_err(to_napi_error)
+                    }
+                    (None, Some(cpu_ms)) => {
+                        let monitor = CpuTimeMonitor::new(Duration::from_millis(cpu_ms as u64))
+                            .map_err(to_napi_error)?;
+                        sandbox
+                            .eval_with_monitor(code, &monitor, gc)
+                            .map_err(to_napi_error)
+                    }
+                };
+
+                poisoned_flag.store(sandbox.poisoned(), Ordering::Release);
+
+                last_call_stats_store.store(
+                    sandbox
+                        .last_call_stats()
+                        .map(|s| Arc::new(CallStats::from(s))),
+                );
+
+                result
+            })
+            .await?;
+
+        serde_json::from_str(&result_json).map_err(|e| {
+            hl_error(
+                ErrorCode::Internal,
+                format!("Failed to parse eval result as JSON: {e}"),
+            )
+        })
+    }
+
     /// Unload all handlers and return to the `JSSandbox` state.
     ///
     /// Use this to register new handlers or to recover from a poisoned

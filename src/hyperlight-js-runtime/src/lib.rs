@@ -40,6 +40,7 @@ use core::cell::RefCell;
 
 use anyhow::{anyhow, Context as _};
 use hashbrown::HashMap;
+use rquickjs::context::EvalOptions;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::promise::MaybePromise;
 use rquickjs::{Context, Ctx, Function, Module, Persistent, Result, Runtime, Value};
@@ -369,6 +370,54 @@ impl JsRuntime {
                 .context("The handler function did not return a value")?
                 .to_string()
                 .catch(&ctx)
+        })
+    }
+
+    /// Evaluate arbitrary JavaScript against the runtime's persistent global
+    /// context (REPL semantics) and return the completion value as a JSON
+    /// string.
+    ///
+    /// Unlike [`Self::run_handler`], which invokes a previously registered
+    /// named handler, this compiles and runs `code` as global script code, so
+    /// top-level `var`/`let`/`const`/`function`/`class` declarations are added
+    /// to the shared global scope and persist across subsequent `eval` and
+    /// handler calls. This mirrors a `quickjs` REPL where each evaluation sees
+    /// the state left behind by previous ones.
+    ///
+    /// The completion value is JSON-serialized. A completion value of
+    /// `undefined` — or any value that is not JSON-serializable (e.g. a
+    /// function) — is returned as the JSON literal `null` rather than raising
+    /// an error, matching REPL semantics where statements need not yield a
+    /// serializable value.
+    ///
+    /// If `run_gc` is true, a garbage collection cycle is run after evaluation.
+    pub fn eval(&mut self, code: String, run_gc: bool) -> anyhow::Result<String> {
+        // Flush any libc-buffered output produced during evaluation.
+        let _guard = FlushGuard;
+
+        self.context.with(|ctx| {
+            let _gc_guard = MaybeRunGcGuard::new(run_gc, &ctx);
+
+            // Evaluate as global (non-module) script code. `global: true` maps
+            // to `JS_EVAL_TYPE_GLOBAL`, which keeps top-level lexical
+            // declarations in the persistent global scope. `strict: false`
+            // matches the permissive semantics of a `quickjs` REPL.
+            let mut options = EvalOptions::default();
+            options.global = true;
+            options.strict = false;
+
+            // Resolve an immediately-settling promise so an evaluated
+            // expression that yields a promise behaves like `run_handler`.
+            let promise: MaybePromise = ctx.eval_with_options(code, options).catch(&ctx)?;
+            let obj: Value = promise.finish().catch(&ctx)?;
+
+            // Serialize the completion value. `undefined` and other
+            // non-serializable values stringify to `None`; surface those as the
+            // JSON literal `null` instead of erroring.
+            match ctx.json_stringify(obj).catch(&ctx)? {
+                Some(s) => s.to_string().catch(&ctx),
+                None => Ok(String::from("null")),
+            }
         })
     }
 }

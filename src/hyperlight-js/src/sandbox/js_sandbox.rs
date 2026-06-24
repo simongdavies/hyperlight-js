@@ -290,6 +290,11 @@ impl JSSandbox {
 
     /// Creates a new `LoadedJSSandbox` with the handlers that have been added to this `JSSandbox`.
     ///
+    /// A sandbox with no registered handlers is permitted: the resulting
+    /// `LoadedJSSandbox` can still be driven through [`LoadedJSSandbox::eval`]
+    /// (a REPL-style use case that runs arbitrary JavaScript against the
+    /// persistent global context without any named handlers).
+    ///
     /// # Partial failure
     ///
     /// This method consumes `self`. If module registration succeeds but a handler
@@ -298,10 +303,6 @@ impl JSSandbox {
     /// the existing handler-only behaviour and the one-shot consumption pattern.
     #[instrument(err(Debug), skip_all, level=Level::TRACE)]
     pub fn get_loaded_sandbox(mut self) -> Result<LoadedJSSandbox> {
-        if self.handlers.is_empty() {
-            return Err(new_error!("No handlers have been added to the sandbox"));
-        }
-
         // Register user modules first so that handlers can import them.
         // NOTE: HashMap iteration order is non-deterministic, but this is safe
         // because modules are lazily compiled by the UserModuleLoader when first

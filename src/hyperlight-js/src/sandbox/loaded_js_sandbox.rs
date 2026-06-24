@@ -140,7 +140,73 @@ impl LoadedJSSandbox {
         result
     }
 
-    /// Returns the execution statistics from the most recent guest function call.
+    /// Evaluate arbitrary JavaScript against the sandbox's persistent global
+    /// context (REPL semantics) and return the completion value as a JSON
+    /// string.
+    ///
+    /// Unlike [`Self::handle_event`], which invokes a previously registered
+    /// named handler, this runs `code` as global script code. Top-level
+    /// `var`/`let`/`const`/`function`/`class` declarations are added to the
+    /// shared global scope and persist across subsequent `eval` and
+    /// `handle_event` calls, mirroring a `quickjs` REPL.
+    ///
+    /// A completion value of `undefined` — or any value that is not
+    /// JSON-serializable (e.g. a function) — is returned as the JSON literal
+    /// `null` rather than raising an error.
+    ///
+    /// # Arguments
+    ///
+    /// * `code` - The JavaScript source to evaluate. Must not be empty.
+    /// * `gc` - Whether to run garbage collection after the call (defaults to
+    ///   `true` if `None`).
+    #[instrument(err(Debug), skip(self, code, gc), level=Level::INFO)]
+    pub fn eval(&mut self, code: String, gc: Option<bool>) -> Result<String> {
+        let should_gc = gc.unwrap_or(true);
+        if code.is_empty() {
+            return Err(HyperlightError::Error(
+                "Eval code must not be empty".to_string(),
+            ));
+        }
+
+        #[cfg(feature = "function_call_metrics")]
+        let _metric_guard = EventHandlerMetricGuard::new("Eval", should_gc);
+
+        // --- guest-call-stats: capture timing before the call ---
+        #[cfg(feature = "guest-call-stats")]
+        let wall_start = std::time::Instant::now();
+
+        #[cfg(all(feature = "guest-call-stats", feature = "monitor-cpu-time"))]
+        let cpu_start = super::monitor::cpu_time::ThreadCpuHandle::for_current_thread()
+            .and_then(|h| h.elapsed().map(|t| (h, t)));
+
+        let result = self.inner.call("Eval", (code, should_gc));
+
+        // --- guest-call-stats: record timing after the call ---
+        // CPU time is read first so the wall-clock measurement fully wraps it.
+        #[cfg(feature = "guest-call-stats")]
+        {
+            #[cfg(feature = "monitor-cpu-time")]
+            let cpu_time = cpu_start.and_then(|(handle, start_ticks)| {
+                handle.elapsed().map(|end_ticks| {
+                    let delta_nanos =
+                        handle.ticks_to_approx_nanos(end_ticks.saturating_sub(start_ticks));
+                    std::time::Duration::from_nanos(delta_nanos)
+                })
+            });
+            #[cfg(not(feature = "monitor-cpu-time"))]
+            let cpu_time: Option<std::time::Duration> = None;
+
+            let wall_clock = wall_start.elapsed();
+
+            self.last_call_stats = Some(ExecutionStats {
+                wall_clock,
+                cpu_time,
+                terminated_by: None,
+            });
+        }
+
+        result
+    }
     ///
     /// Returns `None` before any call has been made. After each `handle_event` or
     /// `handle_event_with_monitor` call, this returns the timing and termination
@@ -323,6 +389,83 @@ impl LoadedJSSandbox {
         // Phase 4: Patch terminated_by into the stats captured by handle_event.
         // If the monitor fired, the winner name was written before kill(), so
         // we can read it safely now.
+        #[cfg(feature = "guest-call-stats")]
+        if let Ok(guard) = terminated_by.lock()
+            && let Some(winner) = *guard
+            && let Some(stats) = &mut self.last_call_stats
+        {
+            stats.terminated_by = Some(winner);
+        }
+
+        result
+    }
+
+    /// Evaluate arbitrary JavaScript with execution monitoring.
+    ///
+    /// Behaves like [`Self::eval`] but enforces execution limits via the
+    /// supplied monitor(s), exactly as [`Self::handle_event_with_monitor`] does
+    /// for handlers. If a limit is exceeded the guest is interrupted, the
+    /// sandbox is poisoned, and an error is returned.
+    ///
+    /// # Fail-Closed Semantics
+    ///
+    /// If the monitor fails to initialize, the code is **never evaluated**.
+    ///
+    /// # Arguments
+    ///
+    /// * `code` - The JavaScript source to evaluate. Must not be empty.
+    /// * `monitor` - The execution monitor (or tuple of monitors) to enforce
+    ///   limits. Tuples race all sub-monitors; the first to fire wins.
+    /// * `gc` - Whether to run garbage collection after the call (defaults to
+    ///   `true` if `None`).
+    #[instrument(err(Debug), skip(self, code, monitor, gc), level=Level::INFO)]
+    pub fn eval_with_monitor<M>(
+        &mut self,
+        code: String,
+        monitor: &M,
+        gc: Option<bool>,
+    ) -> Result<String>
+    where
+        M: MonitorSet,
+    {
+        if code.is_empty() {
+            return Err(HyperlightError::Error(
+                "Eval code must not be empty".to_string(),
+            ));
+        }
+        let interrupt_handle = self.interrupt_handle();
+
+        // Phase 1: Build the racing future on the calling thread (see
+        // handle_event_with_monitor for the detailed rationale). If any monitor
+        // fails to initialize, we fail closed — the code never runs.
+        let racing_future = monitor.to_race().map_err(|e| {
+            tracing::error!("Failed to initialize execution monitor: {}", e);
+            HyperlightError::Error(format!("Execution monitor failed to start: {}", e))
+        })?;
+
+        // Phase 2: Spawn the racing future on the shared monitor runtime.
+        let runtime = get_monitor_runtime().ok_or_else(|| {
+            tracing::error!("Monitor runtime is unavailable");
+            HyperlightError::Error("Monitor runtime is unavailable".to_string())
+        })?;
+
+        let terminated_by = Arc::new(std::sync::Mutex::new(None::<&'static str>));
+        let terminated_by_writer = terminated_by.clone();
+
+        let _monitor_task = MonitorTask(runtime.spawn(async move {
+            let winner = racing_future.await;
+            super::monitor::record_monitor_triggered(winner);
+            if let Ok(mut guard) = terminated_by_writer.lock() {
+                *guard = Some(winner);
+            }
+            interrupt_handle.kill();
+        }));
+
+        // Phase 3: Execute the eval (blocking). When this returns, _monitor_task
+        // drops and aborts the spawned monitor task.
+        let result = self.eval(code, gc);
+
+        // Phase 4: Patch terminated_by into the stats captured by eval.
         #[cfg(feature = "guest-call-stats")]
         if let Ok(guard) = terminated_by.lock()
             && let Some(winner) = *guard

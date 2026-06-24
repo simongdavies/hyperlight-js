@@ -737,6 +737,101 @@ impl LoadedJSSandbox {
         Ok(json_to_py(py, &value, None)?.unbind())
     }
 
+    /// Evaluate arbitrary JavaScript against the sandbox's persistent global
+    /// context (REPL semantics) and return the completion value.
+    ///
+    /// Unlike `call_handler`, this runs `code` as global script code rather
+    /// than invoking a named handler. Top-level `var`/`let`/`const`/`function`/
+    /// `class` declarations are added to the shared global scope and persist
+    /// across subsequent `eval()` and `call_handler()` calls — exactly like a
+    /// `quickjs` REPL.
+    ///
+    /// The completion value is returned as a Python value. A value of
+    /// `undefined` — or any value that is not JSON-serializable (e.g. a
+    /// function) — is returned as `None` rather than raising.
+    ///
+    /// When a timeout is set, an execution monitor races the evaluation with
+    /// OR semantics — whichever fires first terminates execution (raising
+    /// `CancelledError`).
+    #[pyo3(signature = (code, *, wall_clock_timeout_ms=None, cpu_timeout_ms=None, gc=None))]
+    fn eval(
+        &self,
+        py: Python<'_>,
+        code: String,
+        wall_clock_timeout_ms: Option<u32>,
+        cpu_timeout_ms: Option<u32>,
+        gc: Option<bool>,
+    ) -> PyResult<Py<PyAny>> {
+        if code.is_empty() {
+            return Err(invalid_arg("eval code must not be empty"));
+        }
+        if let Some(w) = wall_clock_timeout_ms
+            && !(MIN_TIMEOUT_MS..=MAX_TIMEOUT_MS).contains(&w)
+        {
+            return Err(invalid_arg(format!(
+                "wall_clock_timeout_ms must be between {MIN_TIMEOUT_MS} and {MAX_TIMEOUT_MS}, got {w}"
+            )));
+        }
+        if let Some(c) = cpu_timeout_ms
+            && !(MIN_TIMEOUT_MS..=MAX_TIMEOUT_MS).contains(&c)
+        {
+            return Err(invalid_arg(format!(
+                "cpu_timeout_ms must be between {MIN_TIMEOUT_MS} and {MAX_TIMEOUT_MS}, got {c}"
+            )));
+        }
+
+        let inner = self.inner.clone();
+        let poisoned_flag = self.poisoned_flag.clone();
+        let stats_store = self.last_call_stats.clone();
+
+        let result_json = py.detach(move || -> PyResult<String> {
+            let mut guard = inner.lock().map_err(|_| lock_err())?;
+            let sandbox = guard.as_mut().ok_or_else(|| consumed("LoadedJSSandbox"))?;
+
+            // The sealed `MonitorSet` trait is not object-safe, so the four
+            // (wall, cpu) arms are structurally required — each builds a
+            // distinct concrete monitor type.
+            let result = match (wall_clock_timeout_ms, cpu_timeout_ms) {
+                (None, None) => sandbox.eval(code, gc).map_err(map_hl_err),
+                (Some(wall_ms), Some(cpu_ms)) => {
+                    let monitor = (
+                        WallClockMonitor::new(Duration::from_millis(wall_ms as u64))
+                            .map_err(map_hl_err)?,
+                        CpuTimeMonitor::new(Duration::from_millis(cpu_ms as u64))
+                            .map_err(map_hl_err)?,
+                    );
+                    sandbox
+                        .eval_with_monitor(code, &monitor, gc)
+                        .map_err(map_hl_err)
+                }
+                (Some(wall_ms), None) => {
+                    let monitor = WallClockMonitor::new(Duration::from_millis(wall_ms as u64))
+                        .map_err(map_hl_err)?;
+                    sandbox
+                        .eval_with_monitor(code, &monitor, gc)
+                        .map_err(map_hl_err)
+                }
+                (None, Some(cpu_ms)) => {
+                    let monitor = CpuTimeMonitor::new(Duration::from_millis(cpu_ms as u64))
+                        .map_err(map_hl_err)?;
+                    sandbox
+                        .eval_with_monitor(code, &monitor, gc)
+                        .map_err(map_hl_err)
+                }
+            };
+
+            poisoned_flag.store(sandbox.poisoned(), Ordering::Release);
+            if let Ok(mut stats) = stats_store.lock() {
+                *stats = sandbox.last_call_stats().map(CallStats::from_stats);
+            }
+            result
+        })?;
+
+        let value: JsonValue = serde_json::from_str(&result_json)
+            .map_err(|e| internal(format!("failed to parse eval result as JSON: {e}")))?;
+        Ok(json_to_py(py, &value, None)?.unbind())
+    }
+
     /// Unload handlers and return to the `JSSandbox` state. Consumes `self`.
     fn unload(&self, py: Python<'_>) -> PyResult<JSSandbox> {
         let sandbox = self
