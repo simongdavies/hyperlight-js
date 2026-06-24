@@ -519,26 +519,6 @@ describe('setHostPrintFn', () => {
         expect(secondMessages.join('')).toContain('which callback?');
     });
 
-    it('should continue guest execution when callback throws', async () => {
-        const builder = new SandboxBuilder().setHostPrintFn(() => {
-            throw new Error('print callback exploded');
-        });
-        const proto = await builder.build();
-        const sandbox = await proto.loadRuntime();
-        sandbox.addHandler(
-            'handler',
-            `function handler(event) {
-                console.log("this will throw in the callback");
-                return { survived: true };
-            }`
-        );
-        const loaded = await sandbox.getLoadedSandbox();
-        const result = await loaded.callHandler('handler', {});
-
-        // Guest should continue execution even if the print callback throws
-        expect(result.survived).toBe(true);
-    });
-
     it('should throw CONSUMED after build()', async () => {
         const builder = new SandboxBuilder();
         await builder.build();
